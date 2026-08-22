@@ -27,11 +27,22 @@ export const name = 'dsh-balance-tide'
 //   https://api-docs.deepseek.com/zh-cn/quick_start/pricing/
 // - 2026-08-17T00:00:00+08:00 起采用峰谷定价; 此前为现行统一价。
 // - 高峰时段: 09:00-12:00、14:00-18:00; 其余为空闲(低谷)时段, 价格为高峰的一半。
+// - 2026-08-23T00:00:00+08:00 起, 周末(按北京日历的周六、周日)全天低谷价。
 // 以下三个常量仅作为默认值; 官方调价时可经配置覆盖, 无需等插件发版。
 // ---------------------------------------------------------------------------
 
 /** 峰谷定价生效时刻(ms): 2026-08-17T00:00:00+08:00 = 2026-08-16T16:00:00Z */
 export const TIDE_CUTOFF_MS = Date.UTC(2026, 7, 16, 16, 0, 0)
+
+/**
+ * 周末全天低谷的生效时刻(ms): 2026-08-23T00:00:00+08:00 = 2026-08-22T16:00:00Z。
+ * 官方原文: “自 2026 年 8 月 23 日(周日)00:00 起调整峰谷计费规则, 周末全天
+ * 按空闲时段价格计费”。
+ *
+ * 生效前的时刻仍按旧规则结算 —— 估算是拿 `Date.now()` 算的, 但账单回看、
+ * 历史用量重算拿的是当时的时刻, 无条件打折会把之前那些周末的账悄悄改小。
+ */
+export const WEEKEND_CUTOFF_MS = Date.UTC(2026, 7, 22, 16, 0, 0)
 
 /** 高峰时段窗口(北京时间, [start, end) 小时)。 */
 export const PEAK_WINDOWS_BJT = [
@@ -119,10 +130,13 @@ export const Config = Schema.object({
   defaultPrices: ModelPrice.default({ cacheHit: 0.1, cacheMiss: 1, output: 2 }),
 })
 
-/** 取时刻 t 的北京时间墙钟分量。 */
+/** 取时刻 t 的北京时间墙钟分量(`dow`: 0 = 周日 … 6 = 周六)。 */
 const beijingParts = (t) => {
   const d = new Date(t + 8 * 3600e3)
-  return { h: d.getUTCHours(), y: d.getUTCFullYear(), m: d.getUTCMonth(), day: d.getUTCDate() }
+  return {
+    h: d.getUTCHours(), y: d.getUTCFullYear(), m: d.getUTCMonth(), day: d.getUTCDate(),
+    dow: d.getUTCDay(),
+  }
 }
 
 /** 构造“北京时间 h 点整”的绝对时刻(ms); day/h 溢出由 Date.UTC 自动进位。 */
@@ -138,6 +152,49 @@ const normalizeWindows = (windows) => {
 }
 
 const isPeakHour = (h, windows) => windows.some((w) => h >= w.start && h < w.end)
+
+/** 北京日历上的周六、周日。 */
+const isWeekendDow = (dow) => dow === 0 || dow === 6
+
+/**
+ * 时刻 t 落在哪一档(不含 flat)。
+ *
+ * “是不是周末”看的是北京日历, 不是 UTC 日历: 北京的周末从周五 16:00 UTC 一直到
+ * 周日 16:00 UTC。两份日历只在 16:00–24:00 UTC 这一段对不上, 而现在这两个高峰
+ * 窗口都不在这一段里 —— 也就是说, 直接对未平移的时刻取 `getUTCDay()`, 今天写得
+ * 出来的用例全都能过, 等哪天窗口挪过 16:00 UTC 才开始出错。所以星期几和小时数
+ * 取自同一个平移过的时刻。
+ */
+const phaseAt = (t, windows) => {
+  const { h, dow } = beijingParts(t)
+  if (t >= WEEKEND_CUTOFF_MS && isWeekendDow(dow)) return 'offpeak'
+  return isPeakHour(h, windows) ? 'peak' : 'offpeak'
+}
+
+/**
+ * 从北京时间 y-m-day 的 h 时往后找第一个窗口边界。
+ *
+ * 落在周末里的边界要跳过: 周末全天低谷, 那些边界两边都是低谷, 倒计时归零而画面
+ * 不变。跳过之后这个时刻可能远在 60 多小时之外 —— 周五傍晚下一次进高峰其实是
+ * 周一早上, 返回当天那个旧数字等于承诺一个不会发生的切换。
+ *
+ * 判据看的是**候选时刻**是否已在新规之内, 不是现在: 2026-08-22(周六)傍晚那一刻
+ * 新规还没生效, 而它数着的次日 09:00 已经在新规里了。其余情形保持原来“下一个
+ * 边界”的语义不动。
+ *
+ * 最多只需跨过周六、周日两天, 上限取 9 天足够宽裕。
+ */
+const nextBoundaryAt = (y, m, day, h, boundaries) => {
+  for (let ahead = 0; ahead <= 9; ahead++) {
+    for (const b of boundaries) {
+      if (ahead === 0 && b <= h) continue
+      const candidate = beijingAt(y, m, day + ahead, b)
+      if (candidate >= WEEKEND_CUTOFF_MS && isWeekendDow(beijingParts(candidate).dow)) continue
+      return candidate
+    }
+  }
+  return beijingAt(y, m, day, 24)
+}
 
 /** 解析 `tideCutoff` 配置; 非法值回退到官方公布值。 */
 export const resolveCutoff = (raw) => {
@@ -161,26 +218,26 @@ export const computeTide = (t, options = {}) => {
       isPeak: null,
       next: {
         at: cutoff,
-        phase: isPeakHour(beijingParts(cutoff).h, windows) ? 'peak' : 'offpeak',
+        phase: phaseAt(cutoff, windows),
       },
       note: 'tide-not-started',
     }
   }
   const { h, y, m, day } = beijingParts(t)
-  const isPeak = isPeakHour(h, windows)
-  // 下一次切换必然发生在某个窗口边界的整点; 当天已无边界则顺延到次日首个边界。
+  const phase = phaseAt(t, windows)
+  // 下一次切换必然发生在某个窗口边界的整点; 当天已无边界则顺延到下一天首个边界。
   const boundaries = [...new Set(windows.flatMap((w) => [w.start, w.end]))]
     .filter((b) => b > 0 && b < 24)
     .sort((a, b) => a - b)
-  const nextHour = boundaries.length === 0
-    ? 24
-    : boundaries.find((b) => b > h) ?? boundaries[0] + 24
+  const nextAt = boundaries.length === 0
+    ? beijingAt(y, m, day, 24)
+    : nextBoundaryAt(y, m, day, h, boundaries)
   return {
-    phase: isPeak ? 'peak' : 'offpeak',
-    isPeak,
+    phase,
+    isPeak: phase === 'peak',
     next: {
-      at: beijingAt(y, m, day, nextHour),
-      phase: isPeakHour(nextHour % 24, windows) ? 'peak' : 'offpeak',
+      at: nextAt,
+      phase: phaseAt(nextAt, windows),
     },
     note: 'ok',
   }
