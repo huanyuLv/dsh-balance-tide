@@ -35,10 +35,11 @@ follow Beijing time in real time:
 
 ## Peak/off-peak schedule (Beijing time)
 
-Per the official pricing page (2026-08 edition, last verified 2026-08-15):
+Per the official pricing page (2026-08 edition, last verified 2026-08-22):
 
 - **From 2026-08-17 00:00**, peak/off-peak pricing applies; before that, current flat prices
 - **Peak windows**: 09:00–12:00 and 14:00–18:00; all other hours are off-peak
+- **From 2026-08-23 00:00**, off-peak rates apply all day on weekends (Saturday and Sunday on the Beijing calendar)
 - **Off-peak = half of peak**
 
 | Model (per 1M tokens) | Flat (hit / miss / output) | Off-peak | Peak |
