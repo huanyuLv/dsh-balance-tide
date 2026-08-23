@@ -5,7 +5,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  Config, TIDE_CUTOFF_MS, PEAK_WINDOWS_BJT, TIDE_PRICES,
+  Config, TIDE_CUTOFF_MS, WEEKEND_CUTOFF_MS, PEAK_WINDOWS_BJT, TIDE_PRICES,
   computeTide, priceOf, describeWindows, resolveCutoff,
 } from '../src/index.js'
 
@@ -62,6 +62,44 @@ test('夜间切换跨日 / 跨月 / 跨年', () => {
   assert.equal(bjt(computeTide(at('2028-02-28T20:00:00+08:00')).next.at), '2028-02-29 09:00')
 })
 
+test('WEEKEND_CUTOFF_MS 对应北京时间 2026-08-23 00:00', () => {
+  assert.equal(WEEKEND_CUTOFF_MS, at('2026-08-23T00:00:00+08:00'))
+})
+
+test('周末(周六/周日)全天谷价, 下一切换顺延到周一高峰', () => {
+  // 2026-08-23 为周日(规则生效首日), 2026-08-29 为周六。
+  const cases = [
+    ['2026-08-23T00:30:00+08:00', 'offpeak', '2026-08-24 09:00', 'peak'],
+    ['2026-08-23T09:00:00+08:00', 'offpeak', '2026-08-24 09:00', 'peak'],
+    ['2026-08-23T11:30:00+08:00', 'offpeak', '2026-08-24 09:00', 'peak'],
+    ['2026-08-23T15:00:00+08:00', 'offpeak', '2026-08-24 09:00', 'peak'],
+    ['2026-08-23T23:59:00+08:00', 'offpeak', '2026-08-24 09:00', 'peak'],
+    ['2026-08-29T10:00:00+08:00', 'offpeak', '2026-08-31 09:00', 'peak'],
+    ['2026-08-29T15:30:00+08:00', 'offpeak', '2026-08-31 09:00', 'peak'],
+  ]
+  for (const [iso, phase, nextAt, nextPhase] of cases) {
+    const r = computeTide(at(iso))
+    assert.equal(r.phase, phase, `${iso} 档位`)
+    assert.equal(r.isPeak, phase === 'peak', `${iso} isPeak`)
+    assert.equal(bjt(r.next.at), nextAt, `${iso} 切换时刻`)
+    assert.equal(r.next.phase, nextPhase, `${iso} 切换后档位`)
+  }
+})
+
+test('周末规则生效前的周六(2026-08-22)仍按旧时段判定', () => {
+  // 官方公告: 自 2026-08-23(周日) 00:00 起执行, 此前的周六不适用新规。
+  const r = computeTide(at('2026-08-22T10:00:00+08:00'))
+  assert.equal(r.phase, 'peak')
+  assert.equal(bjt(r.next.at), '2026-08-22 12:00')
+})
+
+test('周五晚间跨越周末, 下一切换为周一高峰', () => {
+  const r = computeTide(at('2026-08-28T20:00:00+08:00'))
+  assert.equal(r.phase, 'offpeak')
+  assert.equal(bjt(r.next.at), '2026-08-31 09:00')
+  assert.equal(r.next.phase, 'peak')
+})
+
 test('切换时刻恒在未来', () => {
   const start = at('2026-08-17T00:00:00+08:00')
   for (let i = 0; i < 24 * 40; i++) {
@@ -79,7 +117,8 @@ test('自定义窗口: 官方调整时段后无需改代码', () => {
   assert.equal(computeTide(at('2026-08-17T03:00:00+08:00'), opts).phase, 'peak')
   assert.equal(computeTide(at('2026-08-17T07:00:00+08:00'), opts).phase, 'offpeak')
   assert.equal(bjt(computeTide(at('2026-08-17T03:00:00+08:00'), opts).next.at), '2026-08-17 06:00')
-  assert.equal(bjt(computeTide(at('2026-08-17T07:00:00+08:00'), opts).next.at), '2026-08-18 06:00')
+  // 07:00 之后的下一切换是次日 00:00(高峰起点)——0 点边界保留后, 切换点不再是次日 06:00。
+  assert.equal(bjt(computeTide(at('2026-08-17T07:00:00+08:00'), opts).next.at), '2026-08-18 00:00')
 })
 
 test('未提供窗口时回退到官方默认', () => {
