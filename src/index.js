@@ -39,6 +39,10 @@ export const PEAK_WINDOWS_BJT = [
   { start: 14, end: 18 },
 ]
 
+/** 周末全天谷价生效时刻(ms): 2026-08-23T00:00:00+08:00 = 2026-08-22T16:00:00Z
+ * 官方新规: 自该时刻起, 周末(周六/周日)全天一律按低谷价计费。 */
+export const WEEKEND_CUTOFF_MS = Date.UTC(2026, 7, 22, 16, 0, 0)
+
 /** 各档位 v4 系列单价(每 1M token)。 */
 export const TIDE_PRICES = {
   /** 现行统一价(2026-08-17 前) */
@@ -167,21 +171,33 @@ export const computeTide = (t, options = {}) => {
     }
   }
   const { h, y, m, day } = beijingParts(t)
-  const isPeak = isPeakHour(h, windows)
-  // 下一次切换必然发生在某个窗口边界的整点; 当天已无边界则顺延到次日首个边界。
+  // 官方新规(2026-08-23 00:00 北京时间起): 周末(周六/周日)全天为低谷价。
+  const beijingWeekday = (ms) => new Date(ms + 8 * 3600e3).getUTCDay()
+  const isWeekendBjt = (ms) => { const w = beijingWeekday(ms); return w === 0 || w === 6 }
+  const weekendOffpeak = t >= WEEKEND_CUTOFF_MS && isWeekendBjt(t)
+  const isPeak = !weekendOffpeak && isPeakHour(h, windows)
+  // 下一次切换必然发生在某天某个窗口边界的整点; 逐日逐边界扫描,
+  // 落在周末(谷价日)的边界不构成切换, 顺延到下一个工作日边界。
+  // 0 点边界必须保留: 自定义窗口起点可为 0(如 [{start:0, end:6}]), 0 点仍是切换点。
   const boundaries = [...new Set(windows.flatMap((w) => [w.start, w.end]))]
-    .filter((b) => b > 0 && b < 24)
+    .filter((b) => b >= 0 && b < 24)
     .sort((a, b) => a - b)
-  const nextHour = boundaries.length === 0
-    ? 24
-    : boundaries.find((b) => b > h) ?? boundaries[0] + 24
+  let next = null
+  for (let d = 0; d <= 8 && next === null; d++) {
+    for (const b of boundaries) {
+      const at = beijingAt(y, m, day + d, b)
+      if (at <= t) continue
+      const ph = (at >= WEEKEND_CUTOFF_MS && isWeekendBjt(at)) || !isPeakHour(b, windows) ? 'offpeak' : 'peak'
+      if (ph !== (isPeak ? 'peak' : 'offpeak')) { next = { at, phase: ph }; break }
+    }
+  }
+  if (next === null) {
+    next = { at: beijingAt(y, m, day + 1, 0), phase: 'offpeak' }
+  }
   return {
     phase: isPeak ? 'peak' : 'offpeak',
     isPeak,
-    next: {
-      at: beijingAt(y, m, day, nextHour),
-      phase: isPeakHour(nextHour % 24, windows) ? 'peak' : 'offpeak',
-    },
+    next,
     note: 'ok',
   }
 }
