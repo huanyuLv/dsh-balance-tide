@@ -1,6 +1,6 @@
 {
   "name": "dsh-balance-tide",
-  "version": "0.4.0",
+  "version": "0.5.2",
   "description": "DeepSeek 余额 + 峰谷计价潮汐提示插件: 在 dsh Web UI 输入框下方显示账户余额、本会话估算消耗，并在余额前提示当前峰/谷价格档位、距下一次切换的倒计时与使用建议",
   "repository": {
     "type": "git",
@@ -31,7 +31,6 @@
     "client": {
       "platform": "web",
       "inject": [
-        "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-ui-conversation"
       ]
@@ -43,7 +42,7 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-credentials": "^0.1.0-rc.6"
+    "@deepseek-ai/dsh-credentials": "^0.1.0-rc.6 || ^0.2.0-rc.1 || ^0.2.1-rc.2 || ^0.2.2-rc.1"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": {

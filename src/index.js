@@ -23,10 +23,12 @@ import { z } from 'zod'
 export const name = 'dsh-balance-tide'
 
 // ---------------------------------------------------------------------------
-// 峰谷计价时间表(北京时间), 依据官方定价页 2026-08 版:
+// 峰谷计价时间表(北京时间), 依据官方定价页(2026-11-18 核对):
 //   https://api-docs.deepseek.com/zh-cn/quick_start/pricing/
 // - 2026-08-17T00:00:00+08:00 起采用峰谷定价; 此前为现行统一价。
-// - 高峰时段: 09:00-12:00、14:00-18:00; 其余为空闲(低谷)时段, 价格为高峰的一半。
+// - "北京时间周一至周五(不含中国法定节假日)9:00-12:00、14:00-18:00 为高峰时段;
+//    其余时段, 包括周末及中国法定节假日全天均为空闲时段。" 空闲价为高峰的一半。
+// - 调休上班的周末仍按周末计(官方原文只认周一至周五)。
 // 以下三个常量仅作为默认值; 官方调价时可经配置覆盖, 无需等插件发版。
 // ---------------------------------------------------------------------------
 
@@ -39,7 +41,16 @@ export const PEAK_WINDOWS_BJT = [
   { start: 14, end: 18 },
 ]
 
-/** 各档位 v4 系列单价(每 1M token)。 */
+/**
+ * 内置中国法定节假日(放假日, 北京日期 → 名称), 来源 NateScarlet/holiday-cn。
+ * 仅作离线兜底; 运行时会按 `holidaySource` 每日拉取最新数据合并。
+ */
+export const BUILTIN_HOLIDAYS = {"2026-01-01":"元旦", "2026-01-02":"元旦", "2026-01-03":"元旦", "2026-02-15":"春节", "2026-02-16":"春节", "2026-02-17":"春节", "2026-02-18":"春节", "2026-02-19":"春节", "2026-02-20":"春节", "2026-02-21":"春节", "2026-02-22":"春节", "2026-02-23":"春节", "2026-04-04":"清明节", "2026-04-05":"清明节", "2026-04-06":"清明节", "2026-05-01":"劳动节", "2026-05-02":"劳动节", "2026-05-03":"劳动节", "2026-05-04":"劳动节", "2026-05-05":"劳动节", "2026-06-19":"端午节", "2026-06-20":"端午节", "2026-06-21":"端午节", "2026-09-25":"中秋节", "2026-09-26":"中秋节", "2026-09-27":"中秋节", "2026-10-01":"国庆节", "2026-10-02":"国庆节", "2026-10-03":"国庆节", "2026-10-04":"国庆节", "2026-10-05":"国庆节", "2026-10-06":"国庆节", "2026-10-07":"国庆节", "2027-01-01":"元旦", "2027-01-02":"元旦", "2027-01-03":"元旦", "2027-02-05":"春节", "2027-02-06":"春节", "2027-02-07":"春节", "2027-02-08":"春节", "2027-02-09":"春节", "2027-02-10":"春节", "2027-02-11":"春节", "2027-02-12":"春节", "2027-02-13":"春节", "2027-04-03":"清明节", "2027-04-04":"清明节", "2027-04-05":"清明节", "2027-05-01":"劳动节", "2027-05-02":"劳动节", "2027-05-03":"劳动节", "2027-05-04":"劳动节", "2027-05-05":"劳动节", "2027-06-09":"端午节", "2027-09-15":"中秋节", "2027-10-01":"国庆节", "2027-10-02":"国庆节", "2027-10-03":"国庆节", "2027-10-04":"国庆节", "2027-10-05":"国庆节", "2027-10-06":"国庆节", "2027-10-07":"国庆节"}
+
+/** 默认节假日数据源({year} 会被替换); 留空则只用内置表 + extraHolidays。 */
+export const HOLIDAY_SOURCE = 'https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/{year}.json'
+
+/** 各档位单价(每 1M token)。deepseek-v4-flash / vision-exp 为旧名, 官方按 flash 计价。 */
 export const TIDE_PRICES = {
   /** 现行统一价(2026-08-17 前) */
   flat: {
@@ -49,15 +60,17 @@ export const TIDE_PRICES = {
   },
   /** 低谷价(高峰的半价) */
   offpeak: {
-    'deepseek-v4-flash': { cacheHit: 0.05, cacheMiss: 1.5, output: 4.5 },
+    'deepseek-flash': { cacheHit: 0.02, cacheMiss: 1, output: 4 },
+    'deepseek-v4-flash': { cacheHit: 0.02, cacheMiss: 1, output: 4 },
+    'deepseek-v4-flash-vision-exp': { cacheHit: 0.02, cacheMiss: 1, output: 4 },
     'deepseek-v4-pro': { cacheHit: 0.15, cacheMiss: 4.5, output: 13.5 },
-    'deepseek-v4-flash-vision-exp': { cacheHit: 0.05, cacheMiss: 1.5, output: 4.5 },
   },
   /** 高峰价 */
   peak: {
-    'deepseek-v4-flash': { cacheHit: 0.1, cacheMiss: 3, output: 9 },
+    'deepseek-flash': { cacheHit: 0.04, cacheMiss: 2, output: 8 },
+    'deepseek-v4-flash': { cacheHit: 0.04, cacheMiss: 2, output: 8 },
+    'deepseek-v4-flash-vision-exp': { cacheHit: 0.04, cacheMiss: 2, output: 8 },
     'deepseek-v4-pro': { cacheHit: 0.3, cacheMiss: 9, output: 27 },
-    'deepseek-v4-flash-vision-exp': { cacheHit: 0.1, cacheMiss: 3, output: 9 },
   },
 }
 
@@ -101,6 +114,10 @@ export const Config = Schema.object({
   tideCutoff: Schema.string().default(''),
   /** 高峰时段窗口(北京时间整点); 官方调整时段时覆盖此项 */
   peakWindows: Schema.array(PeakWindow).default(PEAK_WINDOWS_BJT),
+  /** 节假日数据源 URL 模板({year}); 留空则不联网, 只用内置表 */
+  holidaySource: Schema.string().default(HOLIDAY_SOURCE),
+  /** 额外的全天空闲日(北京日期 YYYY-MM-DD), 用于补充或临时调整 */
+  extraHolidays: Schema.array(Schema.string()).default([]),
   /** 各档位单价; 官方调价时覆盖此项, 无需等插件发版 */
   tidePrices: Schema.object({
     flat: Schema.dict(ModelPrice).default(TIDE_PRICES.flat),
@@ -119,14 +136,40 @@ export const Config = Schema.object({
   defaultPrices: ModelPrice.default({ cacheHit: 0.1, cacheMiss: 1, output: 2 }),
 })
 
-/** 取时刻 t 的北京时间墙钟分量。 */
+/** 取时刻 t 的北京时间墙钟分量(wd: 0=周日 … 6=周六)。 */
 const beijingParts = (t) => {
   const d = new Date(t + 8 * 3600e3)
-  return { h: d.getUTCHours(), y: d.getUTCFullYear(), m: d.getUTCMonth(), day: d.getUTCDate() }
+  return { h: d.getUTCHours(), y: d.getUTCFullYear(), m: d.getUTCMonth(), day: d.getUTCDate(), wd: d.getUTCDay() }
 }
 
-/** 构造“北京时间 h 点整”的绝对时刻(ms); day/h 溢出由 Date.UTC 自动进位。 */
-const beijingAt = (y, m, day, h) => Date.UTC(y, m, day, h - 8, 0, 0, 0)
+/** 北京日期键 YYYY-MM-DD。 */
+export const beijingDateKey = (t) => new Date(t + 8 * 3600e3).toISOString().slice(0, 10)
+
+const HOUR = 3600e3
+/** 向前/向后最多扫描的小时数(覆盖最长的春节 + 周末连休)。 */
+const SCAN_LIMIT_HOURS = 24 * 40
+
+/** 归一化节假日表: 接受 Map / 普通对象 / 日期数组。 */
+const toHolidayMap = (holidays) => {
+  if (holidays instanceof Map) return holidays
+  const map = new Map()
+  if (Array.isArray(holidays)) {
+    for (const d of holidays) if (typeof d === 'string') map.set(d, '')
+  } else if (holidays !== null && typeof holidays === 'object') {
+    for (const [d, name] of Object.entries(holidays)) map.set(d, typeof name === 'string' ? name : '')
+  }
+  return map
+}
+
+/** 某北京日的类型: workday / weekend / holiday。 */
+export const dayTypeAt = (t, holidays = BUILTIN_HOLIDAYS) => {
+  const map = toHolidayMap(holidays)
+  const key = beijingDateKey(t)
+  if (map.has(key)) return { type: 'holiday', name: map.get(key) || '' }
+  const { wd } = beijingParts(t)
+  if (wd === 0 || wd === 6) return { type: 'weekend', name: '' }
+  return { type: 'workday', name: '' }
+}
 
 /** 丢弃非法窗口并按起点排序; 非法配置退化为“全天低谷”而不是抛错。 */
 const normalizeWindows = (windows) => {
@@ -139,6 +182,10 @@ const normalizeWindows = (windows) => {
 
 const isPeakHour = (h, windows) => windows.some((w) => h >= w.start && h < w.end)
 
+/** t 时刻是否处于高峰(已生效前提下): 仅工作日的窗口内为高峰。 */
+const isPeakAt = (t, windows, holidays) =>
+  dayTypeAt(t, holidays).type === 'workday' && isPeakHour(beijingParts(t).h, windows)
+
 /** 解析 `tideCutoff` 配置; 非法值回退到官方公布值。 */
 export const resolveCutoff = (raw) => {
   if (typeof raw !== 'string' || raw === '') return TIDE_CUTOFF_MS
@@ -149,38 +196,56 @@ export const resolveCutoff = (raw) => {
 /**
  * 计算 t 时刻的潮汐状态。
  * @param {number} t 绝对时刻(ms)
- * @param {{cutoff?: number, peakWindows?: Array<{start: number, end: number}>}} [options]
- * @returns {{phase: 'flat'|'peak'|'offpeak', isPeak: boolean|null, next: {at: number, phase: 'peak'|'offpeak'}, note: string}}
+ * 北京时间整点对齐 UTC 整点(+8h), 窗口又是整点, 故档位在每个整点小时内恒定,
+ * 按小时扫描即可精确找到当前段起点 since、切换时刻 next.at 与下一段终点 next.until。
+ * @param {{cutoff?: number, peakWindows?: Array<{start: number, end: number}>, holidays?: object}} [options]
+ * @returns {{phase: 'flat'|'peak'|'offpeak', isPeak: boolean|null, since: number|null,
+ *   day: {type: string, name: string},
+ *   next: {at: number, phase: 'peak'|'offpeak', until: number|null}, note: string}}
  */
 export const computeTide = (t, options = {}) => {
   const cutoff = options.cutoff ?? TIDE_CUTOFF_MS
   const windows = normalizeWindows(options.peakWindows ?? PEAK_WINDOWS_BJT)
+  const holidays = toHolidayMap(options.holidays ?? BUILTIN_HOLIDAYS)
+  const peakAt = (x) => isPeakAt(x, windows, holidays)
+  /** 从 from 起(含)向后找第一个档位 != state 的整点; 找不到返回 null。 */
+  const scanUntil = (from, state) => {
+    let x = from
+    for (let i = 0; i < SCAN_LIMIT_HOURS; i++, x += HOUR) if (peakAt(x) !== state) return x
+    return null
+  }
   if (t < cutoff) {
+    const cutoffPeak = peakAt(cutoff)
     return {
       phase: 'flat',
       isPeak: null,
+      since: null,
+      day: dayTypeAt(t, holidays),
       next: {
         at: cutoff,
-        phase: isPeakHour(beijingParts(cutoff).h, windows) ? 'peak' : 'offpeak',
+        phase: cutoffPeak ? 'peak' : 'offpeak',
+        until: scanUntil(cutoff, cutoffPeak),
       },
       note: 'tide-not-started',
     }
   }
-  const { h, y, m, day } = beijingParts(t)
-  const isPeak = isPeakHour(h, windows)
-  // 下一次切换必然发生在某个窗口边界的整点; 当天已无边界则顺延到次日首个边界。
-  const boundaries = [...new Set(windows.flatMap((w) => [w.start, w.end]))]
-    .filter((b) => b > 0 && b < 24)
-    .sort((a, b) => a - b)
-  const nextHour = boundaries.length === 0
-    ? 24
-    : boundaries.find((b) => b > h) ?? boundaries[0] + 24
+  const hourStart = t - (((t % HOUR) + HOUR) % HOUR)
+  const isPeak = peakAt(t)
+  // 当前段起点: 向前扫到档位不同的那个小时, 其后一小时即起点(不早于 cutoff)。
+  let since = hourStart
+  for (let i = 0; i < SCAN_LIMIT_HOURS && since - HOUR >= cutoff && peakAt(since - HOUR) === isPeak; i++) since -= HOUR
+  // 无窗口(全天低谷)时永不切换: 退化为次日零点, 保证倒计时有限且在未来。
+  const at = scanUntil(hourStart + HOUR, isPeak) ?? (hourStart + HOUR * 24)
+  const nextPeak = peakAt(at)
   return {
     phase: isPeak ? 'peak' : 'offpeak',
     isPeak,
+    since,
+    day: dayTypeAt(t, holidays),
     next: {
-      at: beijingAt(y, m, day, nextHour),
-      phase: isPeakHour(nextHour % 24, windows) ? 'peak' : 'offpeak',
+      at,
+      phase: nextPeak ? 'peak' : 'offpeak',
+      until: scanUntil(at + HOUR, nextPeak),
     },
     note: 'ok',
   }
@@ -230,8 +295,28 @@ const normalizeBalances = (data) => {
   }))
 }
 
+/** 合并节假日表: base(内置/远端) + extra(配置的日期数组); 非法日期丢弃。 */
+export const mergeHolidays = (base, extra = []) => {
+  const map = new Map(toHolidayMap(base))
+  for (const d of Array.isArray(extra) ? extra : []) {
+    if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d) && !map.has(d)) map.set(d, '')
+  }
+  return map
+}
+
+/** 解析 holiday-cn 格式({days:[{date,name,isOffDay}]}), 只取放假日。 */
+export const parseHolidayCn = (data) => {
+  const out = {}
+  for (const d of Array.isArray(data?.days) ? data.days : []) {
+    if (d?.isOffDay === true && typeof d.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.date)) {
+      out[d.date] = typeof d.name === 'string' ? d.name.slice(0, 20) : ''
+    }
+  }
+  return out
+}
+
 /** 构造会话花费投影单元(按当前时段计价)。 */
-export const makeCostProjection = (config) => {
+export const makeCostProjection = (config, getHolidays = () => mergeHolidays(BUILTIN_HOLIDAYS, config.extraHolidays)) => {
   const cutoff = resolveCutoff(config.tideCutoff)
   const zero = () => ({ uncachedInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 })
   /** 宿主可能省略任一 token 字段; 一律折成非负整数, 否则 NaN 会击穿投影 schema。 */
@@ -352,7 +437,7 @@ export const makeCostProjection = (config) => {
     wire: {
       viewSchema,
       view: (state) => {
-      const phase = computeTide(Date.now(), { cutoff, peakWindows: config.peakWindows }).phase
+      const phase = computeTide(Date.now(), { cutoff, peakWindows: config.peakWindows, holidays: getHolidays() }).phase
       const tokens = { uncachedInput: 0, cacheRead: 0, cacheWrite: 0, output: 0 }
       const costByModel = {}
       let cost = 0
@@ -428,7 +513,43 @@ export const isRequestAllowed = (headers, allowedHosts = []) => {
 
 export function apply(ctx, config) {
   const cutoff = resolveCutoff(config.tideCutoff)
-  const tideOptions = { cutoff, peakWindows: config.peakWindows }
+  // 节假日: 内置表 + 远端(每日刷新) + 配置补充; 远端失败时保留上次结果。
+  let remoteHolidays = {}
+  let holidays = mergeHolidays(BUILTIN_HOLIDAYS, config.extraHolidays)
+  const getHolidays = () => holidays
+  const tideOptions = () => ({ cutoff, peakWindows: config.peakWindows, holidays })
+
+  ctx.effect(() => {
+    if (typeof config.holidaySource !== 'string' || !/^https:\/\//.test(config.holidaySource)) return () => {}
+    let timer = null
+    let disposed = false
+    const load = async () => {
+      const y = new Date(Date.now() + 8 * 3600e3).getUTCFullYear()
+      for (const year of [y, y + 1]) {
+        const controller = new AbortController()
+        const t = setTimeout(() => controller.abort(), config.timeoutMs)
+        try {
+          const res = await fetch(config.holidaySource.replace('{year}', String(year)), { signal: controller.signal })
+          if (res.ok) Object.assign(remoteHolidays, parseHolidayCn(await res.json()))
+        } catch (error) {
+          ctx.logger.warn(`[dsh-balance-tide] holiday fetch ${year} failed: ${error instanceof Error ? error.message : String(error)}`)
+        } finally {
+          clearTimeout(t)
+        }
+      }
+      if (!disposed) holidays = mergeHolidays({ ...BUILTIN_HOLIDAYS, ...remoteHolidays }, config.extraHolidays)
+    }
+    const run = () => {
+      void load().then(() => {
+        if (!disposed) timer = setTimeout(run, 24 * 3600e3)
+      })
+    }
+    timer = setTimeout(run, 2000)
+    return () => {
+      disposed = true
+      clearTimeout(timer)
+    }
+  }, 'dsh-balance-tide: holidays')
 
   /** 环境变量名白名单化, 避免把配置项当成任意环境变量的读取入口。 */
   const isValidRef = (ref) => typeof ref === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(ref)
@@ -563,7 +684,7 @@ export function apply(ctx, config) {
   ctx.inject(['webServer'], (webCtx) => {
     const serialize = () => {
       const now = Date.now()
-      const tide = computeTide(now, tideOptions)
+      const tide = computeTide(now, tideOptions())
       const base = {
         ok: cache.state === 'ok',
         fetchedAt: cache.fetchedAt,
@@ -580,6 +701,8 @@ export function apply(ctx, config) {
           phase: tide.phase,
           isPeak: tide.isPeak,
           note: tide.note,
+          since: tide.since,
+          day: tide.day,
           next: tide.next,
           peakWindows: describeWindows(config.peakWindows),
           currentPrices: tideTableOf(config, tide.phase),
@@ -640,6 +763,6 @@ export function apply(ctx, config) {
 
   // 可选 sessionProjections: 会话花费投影。
   ctx.inject(['sessionProjections'], (projectionCtx) => {
-    projectionCtx.sessionProjections.register(makeCostProjection(config))
+    projectionCtx.sessionProjections.register(makeCostProjection(config, getHolidays))
   })
 }

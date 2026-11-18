@@ -4,47 +4,39 @@
 
 [![dsh-plugin](https://img.shields.io/badge/dsh--plugin-DeepSeek%20Harness-blue)](https://github.com/topics/dsh-plugin)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![version](https://img.shields.io/badge/version-0.4.0-4176E6)](package.json)
+[![version](https://img.shields.io/badge/version-0.5.2-4176E6)](package.json)
 
-**DeepSeek Harness (DSH) Web plugin: account balance + peak/off-peak pricing tide indicator.**
+**DeepSeek Harness (DSH) plugin: account balance + peak/off-peak window indicator.**
 
-A live readout row under the composer:
-
-```
-[standard] peak pricing starts in 2d 5h | Balance ¥28.78 | ~¥0.42 this session | ?
-```
-
-Once peak/off-peak pricing takes effect (2026-08-17), the badge and countdown
-follow Beijing time in real time:
+Adds a line **below** the built-in composer status row (turns / steps / tok · cache hit · context):
 
 ```
-[off-peak] peak in 2h 15m | Balance ¥28.78 | ~¥0.42 this session | ?   ← off-peak hours
-[peak] off-peak in 1h 30m | Balance ¥28.78 | ~¥0.42 this session | ?   ← peak hours
+[peak] ends 18:00 · 3h 45m left  next off-peak 18:00–tmrw 09:00 | Balance ¥28.78 | ~¥0.42 this session | ?
+[off-peak] ends Mon 09:00 · 2d 14h left  next peak Mon 09:00–12:00 | Balance ¥28.78 | ~¥0.42 this session | ?
 ```
 
 ## Features
 
-- **Pricing badge**: `standard` (before 2026-08-17) / `peak` / `off-peak`, judged live in Beijing time
-- **Countdown**: time remaining until the next pricing switch, ticking every second — plan your usage ahead
-- **Balance**: live balance from the official `/user/balance` endpoint (granted / topped-up split)
-- **Session cost**: estimated at current-period prices (reuses `sessionProjections`; same-turn/step samples replace rather than double-count)
-- **Hover details**: full price tables for the current and the next period, the peak/off-peak gap (peak = off-peak × 2), peak windows, and usage advice
-- **`?` icon**: opens the official pricing page <https://api-docs.deepseek.com/zh-cn/quick_start/pricing/>
+- **Current window**: `peak` / `off-peak` badge, judged live in Beijing time — weekends and Chinese public holidays included
+- **When it ends**: end time of the current window plus time left, ticking every second
+- **Next window**: start–end of the next window, e.g. `next peak 14:00–18:00`
+- **Balance**: live balance from the official `/user/balance` endpoint
+- **Session cost**: estimated at current-window prices (reuses `sessionProjections`; same turn/step samples replace rather than double-count)
+- **Hover details**: current window start/end, weekend/holiday note, the official rule, and both price tables
+- **`?` icon**: opens the official pricing page
 - **Zero config**: reuses `DEEPSEEK_API_KEY` from DSH credentials — no key in the repo, ever
-- **i18n**: UI follows the interface language (中文 / English)
+- **i18n**: 中文 / English
 
-## Peak/off-peak schedule (Beijing time)
+## Peak/off-peak rule (Beijing time)
 
-Per the official pricing page (2026-08 edition, last verified 2026-08-15):
+Per the official pricing page (last verified 2026-11-18): Mon–Fri, excluding Chinese public holidays, 09:00–12:00 and 14:00–18:00 are peak; everything else — including weekends and public holidays all day — is off-peak. Off-peak = half of peak.
 
-- **From 2026-08-17 00:00**, peak/off-peak pricing applies; before that, current flat prices
-- **Peak windows**: 09:00–12:00 and 14:00–18:00; all other hours are off-peak
-- **Off-peak = half of peak**
+Public holidays: 2026 and 2027 are built in (from [NateScarlet/holiday-cn](https://github.com/NateScarlet/holiday-cn)); the server refreshes them daily via jsDelivr and falls back to the built-in table on failure. Make-up working weekends still count as off-peak, per the official wording.
 
-| Model (per 1M tokens) | Flat (hit / miss / output) | Off-peak | Peak |
-|---|---|---|---|
-| deepseek-v4-flash | 0.02 / 1 / 2 | 0.05 / 1.5 / 4.5 | 0.10 / 3.0 / 9.0 |
-| deepseek-v4-pro | 0.025 / 3 / 6 | 0.15 / 4.5 / 13.5 | 0.30 / 9.0 / 27.0 |
+| Model (CNY per 1M tokens) | Off-peak (hit / miss / output) | Peak (hit / miss / output) |
+|---|---|---|
+| deepseek-flash (legacy name deepseek-v4-flash, same price) | 0.02 / 1 / 4 | 0.04 / 2 / 8 |
+| deepseek-v4-pro | 0.15 / 4.5 / 13.5 | 0.30 / 9 / 27 |
 
 ## Install
 
@@ -52,6 +44,8 @@ Per the official pricing page (2026-08 edition, last verified 2026-08-15):
 
 ```sh
 dsh plugin --profile web add dsh-balance-tide
+# desktop DeepSeek Harness.app uses the desktop profile:
+dsh plugin --profile desktop add dsh-balance-tide
 ```
 
 **From the Git URL**
@@ -89,13 +83,13 @@ wait for a plugin release:
     peakWindows:                              # peak hours (Beijing time, [start, end))
       - { start: 9, end: 12 }
       - { start: 14, end: 18 }
-    tidePrices:                               # per-tier prices (per 1M tokens)
-      flat:
-        deepseek-v4-flash: { cacheHit: 0.02, cacheMiss: 1, output: 2 }
+    tidePrices:                               # per-window prices (per 1M tokens)
       peak:
-        deepseek-v4-flash: { cacheHit: 0.1, cacheMiss: 3, output: 9 }
+        deepseek-flash: { cacheHit: 0.04, cacheMiss: 2, output: 8 }
       offpeak:
-        deepseek-v4-flash: { cacheHit: 0.05, cacheMiss: 1.5, output: 4.5 }
+        deepseek-flash: { cacheHit: 0.02, cacheMiss: 1, output: 4 }
+    holidaySource: ''                         # empty = offline, built-in holiday table only
+    extraHolidays: ['2026-12-24']             # extra all-day off-peak dates
 ```
 
 `peakWindows: []` means there are no peak hours at all — use it if the tiered pricing
@@ -130,7 +124,7 @@ npm test
 
 ## Compatibility
 
-- DeepSeek Harness `0.1.0-rc.6`+ (web profile)
+- DeepSeek Harness `0.1.0-rc.6` – `0.2.x` (web / desktop profile; verified on desktop 0.2.2-rc.3)
 - Node.js 20 / 22 / 24 (covered by CI)
 - Cross-platform: pure JavaScript + standard browser CSS, no native modules
 - License: MIT

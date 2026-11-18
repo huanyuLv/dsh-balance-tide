@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 import {
   Config, TIDE_CUTOFF_MS, PEAK_WINDOWS_BJT, TIDE_PRICES,
   computeTide, priceOf, describeWindows, resolveCutoff,
+  dayTypeAt, mergeHolidays, parseHolidayCn, BUILTIN_HOLIDAYS,
 } from '../src/index.js'
 
 const at = (iso) => Date.parse(iso)
@@ -57,7 +58,8 @@ test('官方时段表逐段判定与下一次切换时刻', () => {
 
 test('夜间切换跨日 / 跨月 / 跨年', () => {
   assert.equal(bjt(computeTide(at('2026-08-31T23:30:00+08:00')).next.at), '2026-09-01 09:00')
-  assert.equal(bjt(computeTide(at('2026-12-31T23:30:00+08:00')).next.at), '2027-01-01 09:00')
+  // 2027-01-01~03 元旦放假(周五~周日), 下一个高峰顺延到 1 月 4 日周一。
+  assert.equal(bjt(computeTide(at('2026-12-31T23:30:00+08:00')).next.at), '2027-01-04 09:00')
   // 闰年 2 月末。
   assert.equal(bjt(computeTide(at('2028-02-28T20:00:00+08:00')).next.at), '2028-02-29 09:00')
 })
@@ -79,7 +81,8 @@ test('自定义窗口: 官方调整时段后无需改代码', () => {
   assert.equal(computeTide(at('2026-08-17T03:00:00+08:00'), opts).phase, 'peak')
   assert.equal(computeTide(at('2026-08-17T07:00:00+08:00'), opts).phase, 'offpeak')
   assert.equal(bjt(computeTide(at('2026-08-17T03:00:00+08:00'), opts).next.at), '2026-08-17 06:00')
-  assert.equal(bjt(computeTide(at('2026-08-17T07:00:00+08:00'), opts).next.at), '2026-08-18 06:00')
+  // 窗口从 0 点开始: 下一次切到高峰是次日 00:00(旧实现漏掉了 0 点边界, 误报 06:00)。
+  assert.equal(bjt(computeTide(at('2026-08-17T07:00:00+08:00'), opts).next.at), '2026-08-18 00:00')
 })
 
 test('未提供窗口时回退到官方默认', () => {
@@ -115,12 +118,14 @@ test('价格表与官方定价页一致', () => {
   // https://api-docs.deepseek.com/zh-cn/quick_start/pricing/ (2026-08 版)
   assert.deepEqual(TIDE_PRICES.flat['deepseek-v4-flash'], { cacheHit: 0.02, cacheMiss: 1, output: 2 })
   assert.deepEqual(TIDE_PRICES.flat['deepseek-v4-pro'], { cacheHit: 0.025, cacheMiss: 3, output: 6 })
-  assert.deepEqual(TIDE_PRICES.offpeak['deepseek-v4-flash'], { cacheHit: 0.05, cacheMiss: 1.5, output: 4.5 })
+  // 2026-11-18 核对: deepseek-flash(旧名 v4-flash 同价) / deepseek-v4-pro
+  assert.deepEqual(TIDE_PRICES.offpeak['deepseek-flash'], { cacheHit: 0.02, cacheMiss: 1, output: 4 })
+  assert.deepEqual(TIDE_PRICES.offpeak['deepseek-v4-flash'], TIDE_PRICES.offpeak['deepseek-flash'])
   assert.deepEqual(TIDE_PRICES.offpeak['deepseek-v4-pro'], { cacheHit: 0.15, cacheMiss: 4.5, output: 13.5 })
-  assert.deepEqual(TIDE_PRICES.peak['deepseek-v4-flash'], { cacheHit: 0.1, cacheMiss: 3, output: 9 })
+  assert.deepEqual(TIDE_PRICES.peak['deepseek-flash'], { cacheHit: 0.04, cacheMiss: 2, output: 8 })
   assert.deepEqual(TIDE_PRICES.peak['deepseek-v4-pro'], { cacheHit: 0.3, cacheMiss: 9, output: 27 })
   // 官方口径: 空闲价 = 高峰价的一半。
-  for (const model of ['deepseek-v4-flash', 'deepseek-v4-pro']) {
+  for (const model of ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro']) {
     for (const field of ['cacheHit', 'cacheMiss', 'output']) {
       assert.equal(TIDE_PRICES.offpeak[model][field] * 2, TIDE_PRICES.peak[model][field],
         `${model}.${field} 应满足 峰价 = 谷价 × 2`)
@@ -148,4 +153,55 @@ test('priceOf 不被原型链上的属性名穿透', () => {
     assert.ok(Number.isFinite(p.cacheMiss), `${model} 的 cacheMiss 应是有限数`)
     assert.deepEqual(p, config.defaultPrices, `${model} 应回退到 defaultPrices`)
   }
+})
+
+test('周末全天低峰: 周五 18:00 后一路低峰到周一 09:00', () => {
+  // 2026-11-20 周五
+  const r = computeTide(at('2026-11-20T19:00:00+08:00'))
+  assert.equal(r.phase, 'offpeak')
+  assert.equal(bjt(r.since), '2026-11-20 18:00')
+  assert.equal(bjt(r.next.at), '2026-11-23 09:00')
+  assert.equal(r.next.phase, 'peak')
+  assert.equal(bjt(r.next.until), '2026-11-23 12:00')
+  const sat = computeTide(at('2026-11-21T10:00:00+08:00'))
+  assert.equal(sat.phase, 'offpeak', '周六上午不是高峰')
+  assert.equal(sat.day.type, 'weekend')
+})
+
+test('法定节假日全天低峰, 且调休上班的周末不算高峰', () => {
+  // 2026-10-01~07 国庆; 2026-10-10 周六调休上班
+  const r = computeTide(at('2026-10-05T10:00:00+08:00'))
+  assert.equal(r.phase, 'offpeak')
+  assert.deepEqual(r.day, { type: 'holiday', name: '国庆节' })
+  assert.equal(bjt(r.next.at), '2026-10-08 09:00')
+  assert.equal(computeTide(at('2026-10-10T10:00:00+08:00')).phase, 'offpeak')
+})
+
+test('since / next.until: 工作日午休段', () => {
+  const r = computeTide(at('2026-11-18T13:36:00+08:00'))
+  assert.equal(r.phase, 'offpeak')
+  assert.equal(bjt(r.since), '2026-11-18 12:00')
+  assert.equal(bjt(r.next.at), '2026-11-18 14:00')
+  assert.equal(bjt(r.next.until), '2026-11-18 18:00')
+  const p = computeTide(at('2026-11-18T09:30:00+08:00'))
+  assert.equal(p.phase, 'peak')
+  assert.equal(bjt(p.since), '2026-11-18 09:00')
+  assert.equal(bjt(p.next.at), '2026-11-18 12:00')
+  assert.equal(bjt(p.next.until), '2026-11-18 14:00')
+})
+
+test('节假日表合并与解析', () => {
+  const m = mergeHolidays({ '2026-01-01': '元旦' }, ['2026-12-24', 'bad', 7])
+  assert.equal(m.get('2026-01-01'), '元旦')
+  assert.equal(m.has('2026-12-24'), true)
+  assert.equal(m.has('bad'), false)
+  const parsed = parseHolidayCn({ days: [
+    { name: '春节', date: '2027-02-08', isOffDay: true },
+    { name: '春节', date: '2027-02-14', isOffDay: false },
+    { name: 'x', date: 'nope', isOffDay: true },
+  ] })
+  assert.deepEqual(parsed, { '2027-02-08': '春节' })
+  assert.equal(dayTypeAt(at('2026-11-18T10:00:00+08:00')).type, 'workday')
+  assert.equal(dayTypeAt(at('2026-11-18T10:00:00+08:00'), { '2026-11-18': '测试' }).type, 'holiday')
+  assert.ok(Object.keys(BUILTIN_HOLIDAYS).length > 50)
 })

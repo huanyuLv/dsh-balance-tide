@@ -22,7 +22,8 @@ window.__ModuleLoader__.load({
 		var exports = module.exports;
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 		let react = require("react");
-		let primitives = require("@deepseek-ai/dsh-client-ui-primitives");
+		let primitives = {};
+		try { primitives = require("@deepseek-ai/dsh-client-ui-primitives"); } catch { /* 宿主无 primitives 时退化 */ }
 
 		//#region styles
 		const CSS_ID = "dsh-balance-tide/styles.css";
@@ -31,7 +32,10 @@ window.__ModuleLoader__.load({
 			tag.dataset.plugin = "dsh-balance-tide";
 			tag.dataset.pluginCss = CSS_ID;
 			tag.textContent = [
-				".dshbt_root{text-align:center;max-width:var(--dsh-chat-content-width);box-sizing:border-box;width:100%;padding:4px calc(var(--dsh-composer-side-clearance) + 16px) 0;color:var(--dsw-alias-label-tertiary);white-space:nowrap;text-overflow:ellipsis;margin:0 auto;font-size:12px;line-height:20px;display:block;overflow:hidden}",
+				".dshbt_root{text-align:center;box-sizing:border-box;width:100%;max-width:100%;padding:0 8px;color:var(--dsw-alias-label-tertiary);white-space:nowrap;text-overflow:ellipsis;margin:0 auto;font-size:12px;line-height:20px;display:block;overflow:hidden;order:99;flex:1 0 100%}",
+				// DSH 0.2.x 的 dock 是单行 flex: 让包含本读数的那一层换行, 读数独占一行排在状态行下方。
+				".dshbt_wrap{display:block;width:100%;min-width:0;flex:1 0 100%;order:99}",
+				".dshbt_q{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:999px;border:1px solid currentColor;font-size:10px;line-height:1;font-weight:600}",
 				".dshbt_sep{color:var(--dsw-alias-separator-primary);margin:0 10px}",
 				".dshbt_amount{color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums}",
 				".dshbt_error{color:var(--dsw-alias-state-error-primary)}",
@@ -40,6 +44,7 @@ window.__ModuleLoader__.load({
 				".dshbt_peak{color:var(--dsw-alias-state-warning-primary,#d97706);background:color-mix(in srgb, currentColor 14%, transparent)}",
 				".dshbt_flat{color:var(--dsw-alias-label-secondary);border-color:var(--dsw-alias-separator-primary);background:var(--dsw-alias-interactive-bg-hover)}",
 				".dshbt_countdown{font-variant-numeric:tabular-nums;margin-left:8px}",
+				".dshbt_next{font-variant-numeric:tabular-nums;margin-left:8px;color:var(--dsw-alias-label-tertiary)}",
 				".dshbt_pricing{color:var(--dsw-alias-label-tertiary);vertical-align:-2px;display:inline-flex;align-items:center;margin-left:2px;padding:0 2px;border-radius:999px;text-decoration:none}",
 				".dshbt_pricing:hover{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-interactive-bg-hover)}"
 			].join("\n");
@@ -61,6 +66,27 @@ window.__ModuleLoader__.load({
 			if (n < 1e3) return String(n);
 			if (n < 1e6) return scaled(n / 1e3) + "K";
 			return scaled(n / 1e6) + "M";
+		}
+		/** 北京时间墙钟。 */
+		const bj = (ms) => new Date(ms + 8 * 3600e3);
+		const bjDayIndex = (ms) => Math.floor((ms + 8 * 3600e3) / 86400e3);
+		const pad2 = (n) => String(n).padStart(2, "0");
+		const bjHM = (ms) => { const d = bj(ms); return pad2(d.getUTCHours()) + ":" + pad2(d.getUTCMinutes()); };
+		/** 相对日期前缀: 同日为空, 次日"明天", 一周内"周X", 更远"M月D日"。ref 为参照时刻。 */
+		function dayPrefix(ms, ref, t) {
+			const diff = bjDayIndex(ms) - bjDayIndex(ref);
+			if (diff === 0) return "";
+			if (diff === 1) return t("day.tomorrow") + " ";
+			if (diff > 1 && diff < 7) return t("day.wd" + bj(ms).getUTCDay()) + " ";
+			const d = bj(ms);
+			return t("day.md", { m: d.getUTCMonth() + 1, d: d.getUTCDate() }) + " ";
+		}
+		/** 时刻标签: [日期前缀] HH:MM(北京时间)。 */
+		const whenLabel = (ms, ref, t) => dayPrefix(ms, ref, t) + bjHM(ms);
+		/** 时段区间: 起 – 止, 止与起同日只写时分。 */
+		function rangeLabel(from, until, ref, t) {
+			if (!Number.isFinite(until)) return whenLabel(from, ref, t) + " " + t("range.onwards");
+			return whenLabel(from, ref, t) + "–" + whenLabel(until, from, t);
 		}
 		function formatClock(ms) {
 			if (ms <= 0) return "—";
@@ -185,19 +211,30 @@ window.__ModuleLoader__.load({
 		const NS = "queryTide";
 		const zh = {
 			"phase.flat": "现行价",
-			"phase.peak": "峰价",
-			"phase.offpeak": "谷价",
+			"phase.peak": "高峰",
+			"phase.offpeak": "低峰",
 			"phase.flatFull": "现行统一价",
-			"phase.peakFull": "高峰价",
-			"phase.offpeakFull": "低谷价",
+			"phase.peakFull": "高峰时段",
+			"phase.offpeakFull": "低峰时段",
 			"countdown.flat": "峰谷计价 {time} 后生效",
-			"countdown.peak": "距低谷 {time}",
+			"countdown.peak": "距低峰 {time}",
 			"countdown.offpeak": "距高峰 {time}",
+			"ends": "至 {when} 结束 · 剩 {left}",
+			"nextRange": "下个{label} {range}",
+			"range.onwards": "起",
+			"day.tomorrow": "明天",
+			"day.md": "{m}月{d}日",
+			"day.wd0": "周日", "day.wd1": "周一", "day.wd2": "周二", "day.wd3": "周三",
+			"day.wd4": "周四", "day.wd5": "周五", "day.wd6": "周六",
+			"dayType.weekend": "今天是周末, 全天低峰",
+			"dayType.holiday": "今天是法定节假日({name}), 全天低峰",
+			"tip.schedule": "当前{label}: {since} 起, 预计 {end} 结束\n下个{nextLabel}: {nextRange}",
+			"tip.rule": "规则: 周一至周五(不含法定节假日) 09:00-12:00、14:00-18:00 为高峰, 其余时段及周末、法定节假日全天为低峰(北京时间)",
 			"balance": "余额 {amount}",
 			"balanceError": "余额不可用",
 			"balanceMissing": "未配置 API Key",
-			"sessionCost": "本会话约 {amount}",
-			"tip.tide": "当前时段: {label} · {countdown}\n高峰窗口: {windows}(北京时间)",
+			"sessionCost": "本会话 {amount}",
+			"tip.tide": "当前时段: {label} · {countdown}",
 			"tip.flatNote": "峰谷定价将于 2026-08-17 00:00(北京时间)生效, 空闲时段价格为高峰的一半",
 			"tip.currentPrices": "当前价(每 1M token · {currency}):\n{models}",
 			"tip.nextPrices": "切换后({label}, 每 1M token):\n{models}",
@@ -221,8 +258,8 @@ window.__ModuleLoader__.load({
 			"err.http-error": "接口返回错误",
 			"err.forbidden": "读取被拒绝: 来源跨源, 或 Host 不在 allowedHosts 中",
 			"err.unknown": "未知错误",
-			"tip.gap": "峰谷差距: 高峰价 = 低谷价 × 2(现行价不参与峰谷)",
-			"tip.advice": "💡 高峰时段价格为低谷的 2 倍, 请合理安排使用时间",
+			"tip.gap": "峰谷差距: 高峰价 = 低峰价 × 2",
+			"tip.advice": "💡 高峰时段价格为低峰的 2 倍, 大任务尽量放到低峰跑",
 			"pricing.aria": "查看 DeepSeek 官方定价策略",
 			"model.unknown": "未知模型",
 			"model.other": "其他模型",
@@ -243,11 +280,22 @@ window.__ModuleLoader__.load({
 			"countdown.flat": "peak pricing starts in {time}",
 			"countdown.peak": "off-peak in {time}",
 			"countdown.offpeak": "peak in {time}",
+			"ends": "ends {when} · {left} left",
+			"nextRange": "next {label} {range}",
+			"range.onwards": "onwards",
+			"day.tomorrow": "tmrw",
+			"day.md": "{m}/{d}",
+			"day.wd0": "Sun", "day.wd1": "Mon", "day.wd2": "Tue", "day.wd3": "Wed",
+			"day.wd4": "Thu", "day.wd5": "Fri", "day.wd6": "Sat",
+			"dayType.weekend": "Weekend: off-peak all day",
+			"dayType.holiday": "Public holiday ({name}): off-peak all day",
+			"tip.schedule": "Current {label}: since {since}, ends {end}\nNext {nextLabel}: {nextRange}",
+			"tip.rule": "Rule: Mon–Fri (excl. CN public holidays) 09:00-12:00 & 14:00-18:00 are peak; everything else incl. weekends/holidays is off-peak (Beijing time)",
 			"balance": "Balance {amount}",
 			"balanceError": "Balance unavailable",
 			"balanceMissing": "API key not configured",
 			"sessionCost": "~{amount} this session",
-			"tip.tide": "Now: {label} · {countdown}\nPeak windows: {windows} (Beijing time)",
+			"tip.tide": "Now: {label} · {countdown}",
 			"tip.flatNote": "Peak/off-peak pricing takes effect 2026-08-17 00:00 (Beijing), off-peak is half of peak",
 			"tip.currentPrices": "Current prices (per 1M tokens · {currency}):\n{models}",
 			"tip.nextPrices": "After switch ({label}, per 1M tokens):\n{models}",
@@ -295,11 +343,53 @@ window.__ModuleLoader__.load({
 		 * 余额 + 潮汐读数: 徽章(峰/谷/现行) + 倒计时 + 余额 + 本会话花费。
 		 * 独立一行居中显示, 不做任何负 margin 对齐(避免与底部文字重叠)。
 		 */
+		/** 宿主缺 Tooltip 时退化为原生 title, 不让整行因依赖缺失而崩掉。 */
+		function SafeTooltip(props) {
+			if (primitives && typeof primitives.Tooltip === "function" || (primitives && typeof primitives.Tooltip === "object")) {
+				return react.createElement(primitives.Tooltip, { portal: true, ...props });
+			}
+			const child = props.children;
+			return react.isValidElement(child) ? react.cloneElement(child, { title: props.label }) : child;
+		}
+		/** 宿主未注入 useProjection 时的占位(保持 hooks 调用次序稳定)。 */
+		const noProjection = () => undefined;
+
 		const TideReadout = react.memo(function TideReadout({ useProjection, t }) {
-			const cost = useProjection("queryTideCost");
-			const usage = useProjection("tokenUsage");
+			const project = typeof useProjection === "function" ? useProjection : noProjection;
+			// 宿主未注入 t 时用内置中文词典兜底。
+			if (typeof t !== "function") t = (key, vars) => String(zh[key] ?? key).replace(/\{(\w+)\}/g, (_, k) => vars?.[k] ?? "");
+			const cost = project("queryTideCost");
+			const usage = project("tokenUsage");
 			const snap = react.useSyncExternalStore(tideStore.subscribe, tideStore.getSnapshot, tideStore.getSnapshot);
 			const [pricingHover, setPricingHover] = react.useState(false);
+			// 换行到默认状态行下方: 找到包住本读数的最近 flex 容器, 让它换行,
+			// 并让本读数所在的那个直接子项独占一整行、排在最后。
+			// 宿主 CSS 类名是哈希的, 所以用运行时查找而不是写死选择器。
+			const wrapRef = react.useRef(null);
+			react.useLayoutEffect(() => {
+				const el = wrapRef.current;
+				if (el === null) return;
+				const dock = el.closest("[data-composer-dock]");
+				let item = el;
+				let box = el.parentElement;
+				while (box !== null && box !== document.body) {
+					const display = getComputedStyle(box).display;
+					if (display === "flex" || display === "inline-flex") break;
+					if (box === dock) { box = null; break; }
+					item = box;
+					box = box.parentElement;
+				}
+				if (box === null || box === document.body) return;
+				const saved = [box.style.flexWrap, box.style.rowGap, item.style.flex, item.style.order, item.style.minWidth];
+				box.style.flexWrap = "wrap";
+				box.style.rowGap = "2px";
+				item.style.flex = "1 0 100%";
+				item.style.order = "99";
+				item.style.minWidth = "0";
+				return () => {
+					[box.style.flexWrap, box.style.rowGap, item.style.flex, item.style.order, item.style.minWidth] = saved;
+				};
+			}, []);
 			const [, setTick] = react.useState(0);
 			// 有效会话成本: 优先服务端 queryTideCost; 若为 0/缺失, 用可靠的 tokenUsage + 当前单价兜底重算。
 			let sessCost = 0;
@@ -336,18 +426,40 @@ window.__ModuleLoader__.load({
 				const phase = tide.phase ?? "flat";
 				const badgeCls = phase === "peak" ? "dshbt_peak" : phase === "offpeak" ? "dshbt_off" : "dshbt_flat";
 				const label = t("phase." + phase);
-				const remaining = (tide.next?.at ?? 0) - Date.now();
+				const now = Date.now();
+				const nextAt = tide.next?.at ?? 0;
+				const remaining = nextAt - now;
+				// 切换时刻已过但服务端快照还没更新: 立即拉一次, 避免显示过期档位。
+				if (remaining <= 0 && snap.status === "ok" && snap.at < nextAt) void refresh();
 				const countdown = t("countdown." + phase, { time: formatDuration(remaining, t) });
+				const nextPhase = tide.next?.phase ?? (phase === "peak" ? "offpeak" : "peak");
+				const nextLabel = t("phase." + nextPhase);
+				const nextRange = rangeLabel(nextAt, tide.next?.until, now, t);
 
 				groups.push(react.createElement("span", { className: "dshbt_badge " + badgeCls, key: "tide" }, label));
-				groups.push(react.createElement("span", { className: "dshbt_countdown", key: "cd" }, countdown));
+				if (phase === "flat") {
+					groups.push(react.createElement("span", { className: "dshbt_countdown", key: "cd" }, countdown));
+				} else {
+					groups.push(react.createElement("span", { className: "dshbt_countdown", key: "cd" },
+						t("ends", { when: whenLabel(nextAt, now, t), left: formatDuration(remaining, t) })));
+					groups.push(react.createElement("span", { className: "dshbt_next", key: "nx" },
+						t("nextRange", { label: nextLabel, range: nextRange })));
+				}
 
 				const fullLabel = t("phase." + phase + "Full");
-				tooltipLines.push(t("tip.tide", {
-					label: fullLabel,
-					countdown,
-					windows: tide.peakWindows ?? "09:00-12:00 / 14:00-18:00"
-				}));
+				tooltipLines.push(t("tip.tide", { label: fullLabel, countdown }));
+				if (phase !== "flat" && Number.isFinite(tide.since)) {
+					tooltipLines.push(t("tip.schedule", {
+						label: fullLabel,
+						since: whenLabel(tide.since, now, t),
+						end: whenLabel(nextAt, now, t),
+						nextLabel: t("phase." + nextPhase + "Full"),
+						nextRange
+					}));
+				}
+				if (tide.day?.type === "weekend") tooltipLines.push(t("dayType.weekend"));
+				if (tide.day?.type === "holiday") tooltipLines.push(t("dayType.holiday", { name: tide.day.name || "—" }));
+				tooltipLines.push(t("tip.rule"));
 				if (tide.note === "tide-not-started") {
 					tooltipLines.push(t("tip.flatNote"));
 				}
@@ -445,7 +557,7 @@ window.__ModuleLoader__.load({
 			}
 
 			// —— "?" 图标: 点击打开官方定价页 ——
-			groups.push(react.createElement(primitives.Tooltip, {
+			groups.push(react.createElement(SafeTooltip, {
 				key: "pricing",
 				label: t("pricing.aria"),
 				side: "top",
@@ -459,7 +571,8 @@ window.__ModuleLoader__.load({
 					title: t("pricing.aria"),
 					onMouseEnter: () => setPricingHover(true),
 					onMouseLeave: () => setPricingHover(false),
-					children: react.createElement(primitives.IconQuestionOutline14, { size: 14 })
+					// 0.2.x 移除了 IconQuestionOutline14, 改用纯 CSS 圆圈问号, 不依赖宿主图标集。
+					children: react.createElement("span", { className: "dshbt_q", "aria-hidden": true }, "?")
 				})
 			}));
 
@@ -470,14 +583,18 @@ window.__ModuleLoader__.load({
 				"aria-hidden": true
 			}, "|") : null, node));
 
-			return react.createElement(primitives.Tooltip, {
-				label: tooltipLines.length > 0 ? tooltipLines.join("\n") : "",
-				side: "top",
-				delayMs: 500,
-				disabled: tooltipLines.length === 0 || pricingHover,
-				children: react.createElement("div", {
-					className: "dshbt_root",
-					children: line
+			return react.createElement("div", {
+				ref: wrapRef,
+				className: "dshbt_wrap",
+				children: react.createElement(SafeTooltip, {
+					label: tooltipLines.length > 0 ? tooltipLines.join("\n") : "",
+					side: "top",
+					delayMs: 500,
+					disabled: tooltipLines.length === 0 || pricingHover,
+					children: react.createElement("div", {
+						className: "dshbt_root",
+						children: line
+					})
 				})
 			});
 		});
